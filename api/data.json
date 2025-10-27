@@ -1,0 +1,22 @@
+{
+    "events": [
+        {
+            "id": 1,
+            "name": "test",
+            "description": "test",
+            "workshopLeader": "test",
+            "startTime": "2025-11-18T13:08",
+            "endTime": "2025-11-18T16:09",
+            "maxParticipants": 20,
+            "location": "test",
+            "rounds": [
+                2,
+                3
+            ],
+            "participants": [],
+            "createdAt": "2025-10-27T15:09:28.305Z"
+        }
+    ],
+    "participants": [],
+    "eventIdCounter": 2
+}

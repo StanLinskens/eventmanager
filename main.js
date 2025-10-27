@@ -5,12 +5,19 @@ class EventManager {
 		this.eventIdCounter = 1;
 		this.currentUser = null;
 		this.adminPassword = 'admin123'; // In productie zou dit veiliger moeten zijn
+		this.apiBase = '/eventmanager/api'; // <-- new: base path to PHP API
 		this.init();
 	}
 
 	init() {
 		this.bindEvents();
-		this.updateDisplay();
+		// load persisted data from server, then update UI
+		this.loadData().then(() => {
+			this.updateDisplay();
+		}).catch((err) => {
+			console.warn('Kon data niet laden:', err);
+			this.updateDisplay();
+		});
 	}
 
 	bindEvents() {
@@ -84,7 +91,54 @@ class EventManager {
 		this.updateDisplay();
 	}
 
-	addEvent() {
+	async loadData() {
+		try {
+			const resp = await fetch(`${this.apiBase}/data.php`);
+			if (!resp.ok) throw new Error('Server returned ' + resp.status);
+			const data = await resp.json();
+			this.events = data.events || [];
+			this.eventIdCounter = data.eventIdCounter || (this.events.reduce((m,e)=>Math.max(m,e.id||0),0) + 1) || 1;
+			const parts = data.participants || {};
+			this.participants = new Map(Object.entries(parts).map(([k,v]) => [k, v]));
+		} catch (err) {
+			console.error('loadData error', err);
+			throw err;
+		}
+	}
+
+	// New: save current in-memory state to PHP JSON store
+	async saveData() {
+		try {
+			// convert participants Map -> plain object
+			const participantsObj = {};
+			for (const [k, v] of this.participants.entries()) participantsObj[k] = v;
+
+			const payload = {
+				events: this.events,
+				participants: participantsObj,
+				eventIdCounter: this.eventIdCounter
+			};
+
+			const resp = await fetch(`${this.apiBase}/data.php`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(payload)
+			});
+			if (!resp.ok) {
+				const txt = await resp.text();
+				throw new Error('Save failed: ' + txt);
+			}
+			const result = await resp.json();
+			if (!result.success) throw new Error(result.message || 'Unknown server error');
+			return true;
+		} catch (err) {
+			console.error('saveData error', err);
+			this.showError('Kon data niet opslaan op de server.');
+			return false;
+		}
+	}
+
+	async addEvent() {
 		const name = document.getElementById('eventName').value;
 		const description = document.getElementById('eventDescription').value;
 		const workshopLeader = document.getElementById('workshopLeader').value;
@@ -121,13 +175,18 @@ class EventManager {
 		};
 
 		this.events.push(event);
+
+		// persist
+		const ok = await this.saveData();
+		if (!ok) return;
+
 		this.updateDisplay();
 		this.clearForm('eventForm');
 		this.showSuccess('Event succesvol toegevoegd!');
 	}
 
 
-	registerParticipant() {
+	async registerParticipant() {
 		const name = document.getElementById('participantName').value;
 		const email = document.getElementById('participantEmail').value;
 		const studentNumber = parseInt(document.getElementById('studentNumber').value);
@@ -227,6 +286,10 @@ class EventManager {
 
 		this.participants.set(email, currentEvents);
 
+		// persist
+		const ok = await this.saveData();
+		if (!ok) return;
+
 		this.updateDisplay();
 		this.clearForm('studentRegistrationForm');
 		this.showSuccess(`Succesvol aangemeld voor: ${newEvents.map(e => `"${e.event.name}" (Ronde ${e.ronde})`).join(', ')}`);
@@ -241,18 +304,24 @@ class EventManager {
 		};
 
 		try {
-			const resp = fetch('/api/send-confirmation', {
+			const resp = await fetch(`${this.apiBase}/send-confirmation.php`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(emailPayload)
 			});
 
 			if (!resp.ok) {
-				const err = resp.text();
+				const err = await resp.text();
 				console.error('Email sending failed:', err);
 				this.showError('Er ging iets mis bij het versturen van de bevestiging (server).');
 			} else {
-				this.showSuccess(`Succesvol aangemeld voor: ${newEvents.map(e => `"${e.name}"`).join(', ')} — bevestiging verzonden.`);
+				const r = await resp.json();
+				if (r.success) {
+					this.showSuccess(`Succesvol aangemeld voor: ${newEvents.map(e => `"${e.event.name}"`).join(', ')} — bevestiging verzonden.`);
+				} else {
+					console.error('Email endpoint error:', r);
+					this.showError('Bevestiging niet verzonden (server).');
+				}
 			}
 		} catch (err) {
 			console.error('Network error while sending email:', err);
@@ -274,31 +343,20 @@ class EventManager {
 				this.participants.set(email, updatedEvents);
 			}
 
+			// persist
+			this.saveData();
+
 			this.updateDisplay();
 		}
 	}
-
-	// validateFormInputs() {
-	//     const name = document.getElementById('participantName').value.trim();
-	//     const email = document.getElementById('participantEmail').value.trim();
-	//     const studentNumber = document.getElementById('studentNumber').value.trim();
-	//     const studentProgram = document.getElementById('studentProgram').value.trim();
-
-	//     const event1 = document.getElementById('eventSelect').value;
-	//     const event2 = document.getElementById('eventSelect2').value;
-	//     const event3 = document.getElementById('eventSelect3').value;
-
-	//     const allFieldsFilled = name && email && studentNumber && studentProgram && event1 && event2 && event3;
-
-	//     document.getElementById('registerBtn').style.display = allFieldsFilled ? 'block' : 'none';
-	// }
-
 
 	clearAllEvents() {
 		if (confirm('Weet je zeker dat je alle workshops wilt wissen?')) {
 			this.events = [];
 			this.participants.clear();
 			this.eventIdCounter = 1;
+			// persist
+			this.saveData();
 			this.updateDisplay();
 			this.showSuccess('Alle events zijn gewist!');
 		}
@@ -359,6 +417,13 @@ class EventManager {
 
 	deleteEvent(id) {
 		this.events = this.events.filter(e => e.id !== id);
+		// remove references in participants map
+		for (const [email, arr] of this.participants.entries()) {
+			const updated = arr.filter(x => x !== id);
+			if (updated.length) this.participants.set(email, updated); else this.participants.delete(email);
+		}
+		// persist
+		this.saveData();
 		this.updateDisplay();
 		this.showSuccess('Workshop verwijderd!');
 	}
@@ -402,81 +467,78 @@ class EventManager {
 			return;
 		}
 
-		if (this.currentUser && this.currentUser.role === 'admin') {
-			const statistics = document.querySelector('.statistics');
-			statistics.style.display = (this.currentUser && this.currentUser.role === 'admin') ? 'block' : 'none';
+		// Always render events for all users. Admin-only controls are inserted conditionally.
+		grid.innerHTML = this.events.map(event => {
+			const isFull = event.participants.length >= event.maxParticipants;
+			const startDate = new Date(event.startTime);
+			const endDate = new Date(event.endTime);
+			const roundsLabel = event.rounds ? event.rounds.join(', ') : '-';
 
-			grid.innerHTML = this.events.map(event => {
-				const isFull = event.participants.length >= event.maxParticipants;
-				const startDate = new Date(event.startTime);
-				const endDate = new Date(event.endTime);
+			return `
+				<div class="event-card ${isFull ? 'full' : ''}">
+					<div class="event-header">
+						<div class="event-title">${event.name} (Rondes ${roundsLabel})</div>
+						<div class="event-status ${isFull ? 'status-full' : 'status-available'}">
+							${isFull ? 'VOL' : 'BESCHIKBAAR'}
+						</div>
+					</div>
 
-				const roundsLabel = event.rounds ? event.rounds.join(', ') : '-';
+					<div class="event-details">
+						${event.description ? `<p style="margin-bottom: 15px; color: #7f8c8d;">${event.description}</p>` : ''}
+						
+						<div class="event-detail">
+							<span><strong>👨‍🏫 Workshop Leider:</strong></span>
+							<span>${event.workshopLeader}</span>
+						</div>
+						<div class="event-detail">
+							<span><strong>📅 Start:</strong></span>
+							<span>${startDate.toLocaleString('nl-NL')}</span>
+						</div>
+						<div class="event-detail">
+							<span><strong>⏰ Eind:</strong></span>
+							<span>${endDate.toLocaleString('nl-NL')}</span>
+						</div>
+						${event.location ? `
+						<div class="event-detail">
+							<span><strong>📍 Locatie:</strong></span>
+							<span>${event.location}</span>
+						</div>
+						` : ''}
+						<div class="event-detail">
+							<span><strong>👥 Deelnemers:</strong></span>
+							<span>${event.participants.length}/${event.maxParticipants}</span>
+						</div>
+					</div>
 
-				return `
-		            <div class="event-card ${isFull ? 'full' : ''}">
-		                <div class="event-header">
-		                    <div class="event-title">${event.name} (Rondes ${roundsLabel})</div>
-                    <div class="event-status ${isFull ? 'status-full' : 'status-available'}">
-                        ${isFull ? 'VOL' : 'BESCHIKBAAR'}
-                    </div>
-                </div>
+					${event.participants.length > 0 ? `
+					<div class="participants-list">
+						<strong>Aangemelde deelnemers:</strong>
+						${event.participants.map(p => `
+						<div class="participant-item">
+							<div>
+								<div><strong>${p.name}</strong> (${p.email})</div>
+								<div class="participant-details">
+									Leerlingnummer: ${p.studentNumber} | Opleiding: ${p.studentProgram}
+								</div>
+							</div>
+							${this.currentUser && this.currentUser.role === 'admin' ? `
+							<button class="remove-btn" onclick="eventManager.removeParticipant(${event.id}, '${p.email}')">❌</button>
+							` : ''}
+						</div>
+						`).join('')}
+					</div>
+					` : ''}
 
-                <div class="event-details">
-                    ${event.description ? `<p style="margin-bottom: 15px; color: #7f8c8d;">${event.description}</p>` : ''}
-                    
-                    <div class="event-detail">
-                        <span><strong>👨‍🏫 Workshop Leider:</strong></span>
-                        <span>${event.workshopLeader}</span>
-                    </div>
-                    <div class="event-detail">
-                        <span><strong>📅 Start:</strong></span>
-                        <span>${startDate.toLocaleString('nl-NL')}</span>
-                    </div>
-                    <div class="event-detail">
-                        <span><strong>⏰ Eind:</strong></span>
-                        <span>${endDate.toLocaleString('nl-NL')}</span>
-                    </div>
-                    ${event.location ? `
-                    <div class="event-detail">
-                        <span><strong>📍 Locatie:</strong></span>
-                        <span>${event.location}</span>
-                    </div>
-                    ` : ''}
-                    <div class="event-detail">
-                        <span><strong>👥 Deelnemers:</strong></span>
-                        <span>${event.participants.length}/${event.maxParticipants}</span>
-                    </div>
-                </div>
-
-                ${event.participants.length > 0 ? `
-                <div class="participants-list">
-                    <strong>Aangemelde deelnemers:</strong>
-                    ${event.participants.map(p => `
-                    <div class="participant-item">
-                        <div>
-                            <div><strong>${p.name}</strong> (${p.email})</div>
-                            <div class="participant-details">
-                                Leerlingnummer: ${p.studentNumber} | Opleiding: ${p.studentProgram}
-                            </div>
-                        </div>
-                        ${this.currentUser && this.currentUser.role === 'admin' ? `
-                        <button class="remove-btn" onclick="eventManager.removeParticipant(${event.id}, '${p.email}')">❌</button>
-                        ` : ''}
-                    </div>
-                    `).join('')}
-                </div>
-                ` : ''}
-
-                <!-- Admin actions -->
-                <div class="event-actions">
-                    <button onclick="eventManager.copyEvent(${event.id})">📋 Kopiëren</button>
-                    <button onclick="eventManager.deleteEvent(${event.id})">🗑️ Verwijderen</button>
-                </div>
-            </div>
-            `;
-			}).join('');
-		}
+					<!-- Admin actions -->
+					${this.currentUser && this.currentUser.role === 'admin' ? `
+					<div class="event-actions">
+						<button onclick="eventManager.copyEvent(${event.id})">📋 Kopiëren</button>
+						<button onclick="eventManager.deleteEvent(${event.id})">🗑️ Verwijderen</button>
+					</div>
+					` : ''}
+				</div>
+			`;
+		}).join('');
 	}
 
 	updateEventSelect() {
