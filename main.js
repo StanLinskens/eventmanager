@@ -96,10 +96,44 @@ class EventManager {
 			const resp = await fetch(`${this.apiBase}/data.php`);
 			if (!resp.ok) throw new Error('Server returned ' + resp.status);
 			const data = await resp.json();
-			this.events = data.events || [];
+
+			// Normalize events and participant dates (server stores ISO strings)
+			this.events = (data.events || []).map(ev => {
+				// ensure numeric fields
+				ev.maxParticipants = parseInt(ev.maxParticipants) || 0;
+
+				// rounds may be stored as JSON string
+				if (typeof ev.rounds === 'string') {
+					try { ev.rounds = JSON.parse(ev.rounds); } catch (e) { ev.rounds = ev.rounds.split(',').map(x => parseInt(x)); }
+				}
+				ev.rounds = ev.rounds || [];
+
+				// participants may be stored as JSON string
+				if (typeof ev.participants === 'string') {
+					try { ev.participants = JSON.parse(ev.participants); } catch (e) { ev.participants = []; }
+				}
+				ev.participants = (ev.participants || []).map(p => {
+					if (p && p.registeredAt) p.registeredAt = new Date(p.registeredAt);
+					return p;
+				});
+
+				// createdAt normalization
+				if (ev.createdAt) ev.createdAt = new Date(ev.createdAt);
+
+				return ev;
+			});
+
 			this.eventIdCounter = data.eventIdCounter || (this.events.reduce((m,e)=>Math.max(m,e.id||0),0) + 1) || 1;
+
 			const parts = data.participants || {};
-			this.participants = new Map(Object.entries(parts).map(([k,v]) => [k, v]));
+			const entries = Object.entries(parts).map(([k, v]) => {
+				// event id lists may be stored as JSON strings
+				if (typeof v === 'string') {
+					try { v = JSON.parse(v); } catch (e) { v = []; }
+				}
+				return [k, v];
+			});
+			this.participants = new Map(entries);
 		} catch (err) {
 			console.error('loadData error', err);
 			throw err;
