@@ -1,1 +1,0 @@
-A website where you can join workshops made by an admin.

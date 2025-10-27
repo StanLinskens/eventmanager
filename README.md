@@ -1,2 +1,2 @@
 # eventmanager
-eventmanager - to sign in for workshops
+ - to sign in for workshops
