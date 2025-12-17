@@ -1,0 +1,1 @@
+INSERT INTO admins (id, username, password_hash) VALUES (1, 'admin', '1234')

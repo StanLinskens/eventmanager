@@ -4,7 +4,7 @@ class EventManager {
 		this.participants = new Map(); // email -> [eventIds] mapping
 		this.eventIdCounter = 1;
 		this.currentUser = null;
-		this.adminPassword = 'admin123'; // In productie zou dit veiliger moeten zijn
+		// Admin password is now validated against the server-side DB
 		this.apiBase = '/eventmanager/api'; // <-- new: base path to PHP API
 		this.init();
 	}
@@ -54,13 +54,32 @@ class EventManager {
 	}
 
 	adminLogin() {
+		const username = document.getElementById('adminUsername').value;
 		const password = document.getElementById('adminPassword').value;
-		if (password === this.adminPassword) {
-			this.currentUser = { role: 'admin' };
-			this.showInterface();
-		} else {
-			alert('Incorrect wachtwoord!');
-		}
+		if (!username) { this.showError('Voer een gebruikersnaam in.'); return; }
+		if (!password) { this.showError('Voer een wachtwoord in.'); return; }
+		// Call server to validate
+		fetch(`${this.apiBase}/data.php`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ action: 'login', username, password })
+		}).then(async resp => {
+			if (!resp.ok) {
+				const txt = await resp.text();
+				this.showError('Login mislukt: ' + (txt || resp.status));
+				return;
+			}
+			const data = await resp.json();
+			if (data && data.success) {
+				this.currentUser = { role: 'admin', username: data.username };
+				this.showInterface();
+			} else {
+				this.showError('Onjuist wachtwoord.');
+			}
+		}).catch(err => {
+			console.error('Login error', err);
+			this.showError('Kan geen verbinding maken met de server.');
+		});
 	}
 
 	logout() {
@@ -70,6 +89,7 @@ class EventManager {
 		document.getElementById('adminPanel').style.display = 'none';
 		document.getElementById('registrationForm').style.display = 'none';
 		document.getElementById('adminLogin').style.display = 'none';
+		document.getElementById('adminUsername').value = '';
 		document.getElementById('adminPassword').value = '';
 	}
 
@@ -104,9 +124,21 @@ class EventManager {
 
 				// rounds may be stored as JSON string
 				if (typeof ev.rounds === 'string') {
-					try { ev.rounds = JSON.parse(ev.rounds); } catch (e) { ev.rounds = ev.rounds.split(',').map(x => parseInt(x)); }
+					try { ev.rounds = JSON.parse(ev.rounds); } catch (e) {
+						// fall back to comma separated numbers
+						ev.rounds = ev.rounds.split(',').map(x => parseInt(x));
+					}
 				}
-				ev.rounds = ev.rounds || [];
+
+				// Normalize rounds into objects: {round: number, time: 'HH:MM'}
+				if (!ev.rounds) ev.rounds = [];
+				ev.rounds = ev.rounds.map(r => {
+					if (r && typeof r === 'object' && r.round) return { round: parseInt(r.round), time: r.time || '' };
+					const n = parseInt(r);
+					if (!isNaN(n)) return { round: n, time: '' };
+					// final fallback
+					return { round: parseInt(r) || 0, time: '' };
+				});
 
 				// participants may be stored as JSON string
 				if (typeof ev.participants === 'string') {
@@ -180,9 +212,14 @@ class EventManager {
 		const endTime = document.getElementById('endTime').value;
 		const maxParticipants = parseInt(document.getElementById('maxParticipants').value);
 		const location = document.getElementById('location').value;
-		// collect rounds from admin checkboxes (.roundCheckbox added in index.html)
+		// collect rounds from admin checkboxes and associated time inputs
 		const roundCheckboxes = Array.from(document.querySelectorAll('.roundCheckbox'));
-		const rounds = roundCheckboxes.filter(cb => cb.checked).map(cb => parseInt(cb.value));
+		const rounds = roundCheckboxes.filter(cb => cb.checked).map(cb => {
+			const num = parseInt(cb.value);
+			const timeInput = document.querySelector(`.roundTime[data-round="${num}"]`);
+			const time = timeInput ? timeInput.value : '';
+			return { round: num, time };
+		});
 
 		if (rounds.length === 0) {
 			this.showError('Selecteer minimaal één ronde voor de workshop.');
@@ -284,7 +321,7 @@ class EventManager {
 			}
 
 			// Ensure the event includes the requested ronde
-			if (!event.rounds || !event.rounds.includes(requestedRonde)) {
+			if (!event.rounds || !event.rounds.some(r => parseInt(r.round) === parseInt(requestedRonde))) {
 				this.showError(`Event "${event.name}" is niet beschikbaar in Ronde ${requestedRonde}.`);
 				return;
 			}
@@ -397,11 +434,16 @@ class EventManager {
 	}
 
 	exportToCSV() {
-		let csv = 'Event Naam,Beschrijving,Workshop Leider,Starttijd,Eindtijd,Locatie,Rondes,Maximum Deelnemers,Aantal Aanmeldingen,Deelnemer Naam,Email,Leerlingnummer,Opleiding,Aanmelddatum\n';
+		let csv = 'Event Naam,Beschrijving,Workshop Leider,Datum,Tijd,Locatie,Rondes (met tijden),Maximum Deelnemers,Aantal Aanmeldingen,Deelnemer Naam,Email,Leerlingnummer,Opleiding,Aanmelddatum\n';
 
 		this.events.forEach(event => {
-			const roundsStr = event.rounds ? event.rounds.join('|') : '';
-			const baseInfo = `"${event.name}","${event.description}","${event.workshopLeader}","${event.startTime}","${event.endTime}","${event.location}","${roundsStr}",${event.maxParticipants},${event.participants.length}`;
+			const startDate = new Date(event.startTime);
+			const endDate = new Date(event.endTime);
+			const dateStr = startDate.toLocaleDateString('nl-NL', { day: '2-digit', month: 'short' });
+			const timeStr = `${startDate.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })} - ${endDate.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })}`;
+			
+			const roundsStr = event.rounds && event.rounds.length ? event.rounds.map(r => `Ronde ${r.round} (${r.time || 'geen tijd'})`).join(' | ') : '';
+			const baseInfo = `"${event.name}","${event.description}","${event.workshopLeader}","${dateStr}","${timeStr}","${event.location}","${roundsStr}",${event.maxParticipants},${event.participants.length}`;
 
 			if (event.participants.length === 0) {
 				csv += baseInfo + ',,,,,\n';
@@ -418,11 +460,16 @@ class EventManager {
 	exportToExcel() {
 		// Simple HTML table format that Excel can open
 		let html = '<table border="1">';
-		html += '<tr><th>Event Naam</th><th>Beschrijving</th><th>Workshop Leider</th><th>Starttijd</th><th>Eindtijd</th><th>Locatie</th><th>Rondes</th><th>Max Deelnemers</th><th>Aantal Aanmeldingen</th><th>Deelnemer Naam</th><th>Email</th><th>Leerlingnummer</th><th>Opleiding</th><th>Aanmelddatum</th></tr>';
+		html += '<tr><th>Event Naam</th><th>Beschrijving</th><th>Workshop Leider</th><th>Datum</th><th>Tijd</th><th>Locatie</th><th>Rondes (met tijden)</th><th>Max Deelnemers</th><th>Aantal Aanmeldingen</th><th>Deelnemer Naam</th><th>Email</th><th>Leerlingnummer</th><th>Opleiding</th><th>Aanmelddatum</th></tr>';
 
 		this.events.forEach(event => {
-			const roundsStr = event.rounds ? event.rounds.join('|') : '';
-			const baseInfo = `<td>${event.name}</td><td>${event.description}</td><td>${event.workshopLeader}</td><td>${event.startTime}</td><td>${event.endTime}</td><td>${event.location}</td><td>${roundsStr}</td><td>${event.maxParticipants}</td><td>${event.participants.length}</td>`;
+			const startDate = new Date(event.startTime);
+			const endDate = new Date(event.endTime);
+			const dateStr = startDate.toLocaleDateString('nl-NL', { day: '2-digit', month: 'short' });
+			const timeStr = `${startDate.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })} - ${endDate.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })}`;
+			
+			const roundsStr = event.rounds && event.rounds.length ? event.rounds.map(r => `Ronde ${r.round} (${r.time || 'geen tijd'})`).join(' | ') : '';
+			const baseInfo = `<td>${event.name}</td><td>${event.description}</td><td>${event.workshopLeader}</td><td>${dateStr}</td><td>${timeStr}</td><td>${event.location}</td><td>${roundsStr}</td><td>${event.maxParticipants}</td><td>${event.participants.length}</td>`;
 
 			if (event.participants.length === 0) {
 				html += '<tr>' + baseInfo + '<td></td><td></td><td></td><td></td><td></td></tr>';
@@ -474,7 +521,13 @@ class EventManager {
 			// set round checkboxes
 			const checkboxes = Array.from(document.querySelectorAll('.roundCheckbox'));
 			checkboxes.forEach(cb => {
-				cb.checked = eventToCopy.rounds ? eventToCopy.rounds.includes(parseInt(cb.value)) : false;
+				cb.checked = eventToCopy.rounds ? eventToCopy.rounds.some(r => parseInt(r.round) === parseInt(cb.value)) : false;
+				// set corresponding time input if available
+				const timeInput = document.querySelector(`.roundTime[data-round="${cb.value}"]`);
+				if (timeInput && eventToCopy.rounds) {
+					const found = eventToCopy.rounds.find(r => parseInt(r.round) === parseInt(cb.value));
+					if (found) timeInput.value = found.time || '';
+				}
 			});
 
 			// Reset dates so the admin *must* pick new ones
@@ -506,7 +559,7 @@ class EventManager {
 			const isFull = event.participants.length >= event.maxParticipants;
 			const startDate = new Date(event.startTime);
 			const endDate = new Date(event.endTime);
-			const roundsLabel = event.rounds ? event.rounds.join(', ') : '-';
+			const roundsLabel = event.rounds && event.rounds.length ? event.rounds.map(r => `${r.round}${r.time ? ' (' + r.time + ')' : ''}`).join(', ') : '-';
 
 			return `
 				<div class="event-card ${isFull ? 'full' : ''}">
@@ -525,12 +578,12 @@ class EventManager {
 							<span>${event.workshopLeader}</span>
 						</div>
 						<div class="event-detail">
-							<span><strong>📅 Start:</strong></span>
-							<span>${startDate.toLocaleString('nl-NL')}</span>
+							<span><strong>📅 Datum:</strong></span>
+							<span>${startDate.toLocaleDateString('nl-NL', { day: '2-digit', month: 'short' })}</span>
 						</div>
 						<div class="event-detail">
-							<span><strong>⏰ Eind:</strong></span>
-							<span>${endDate.toLocaleString('nl-NL')}</span>
+							<span><strong>⏰ Tijd:</strong></span>
+							<span>${startDate.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })} - ${endDate.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })}</span>
 						</div>
 						${event.location ? `
 						<div class="event-detail">
@@ -595,7 +648,7 @@ class EventManager {
 			const options = ['<option value="">-- Kies een workshop --</option>'];
 			this.events.forEach(event => {
 				if (event.participants.length >= event.maxParticipants) return; // skip full events
-				if (!event.rounds || !event.rounds.includes(cfg.ronde)) return; // skip events not in this ronde
+				if (!event.rounds || !event.rounds.some(r => parseInt(r.round) === cfg.ronde)) return; // skip events not in this ronde
 				// don't show if already selected in another select
 				if (currentSelections.includes(String(event.id)) && select.value !== String(event.id)) return;
 				options.push(`<option value="${event.id}">${event.name} - ${event.workshopLeader} (${event.participants.length}/${event.maxParticipants})</option>`);

@@ -29,6 +29,7 @@
             <div class="admin-login" id="adminLogin">
                 <h3>Administrator Login</h3>
                 <div style="margin-top: 15px;">
+                    <input type="text" id="adminUsername" placeholder="Gebruikersnaam" style="margin-bottom: 10px;">
                     <input type="password" id="adminPassword" placeholder="Wachtwoord" style="margin-bottom: 10px;">
                     <button onclick="eventManager.adminLogin()">Inloggen</button>
                 </div>
@@ -82,9 +83,18 @@
                     <div>
                         <label>Rondes (tijdsloten):</label>
                         <div class="rounds-checkboxes">
-                            <label><input type="checkbox" class="roundCheckbox" value="1"> Ronde 1</label>
-                            <label><input type="checkbox" class="roundCheckbox" value="2"> Ronde 2</label>
-                            <label><input type="checkbox" class="roundCheckbox" value="3"> Ronde 3</label>
+                            <div class="round-row">
+                                <label><input type="checkbox" class="roundCheckbox" value="1"> Ronde 1</label>
+                                <input type="time" class="roundTime" data-round="1" id="round1Time" title="Tijd voor Ronde 1">
+                            </div>
+                            <div class="round-row">
+                                <label><input type="checkbox" class="roundCheckbox" value="2"> Ronde 2</label>
+                                <input type="time" class="roundTime" data-round="2" id="round2Time" title="Tijd voor Ronde 2">
+                            </div>
+                            <div class="round-row">
+                                <label><input type="checkbox" class="roundCheckbox" value="3"> Ronde 3</label>
+                                <input type="time" class="roundTime" data-round="3" id="round3Time" title="Tijd voor Ronde 3">
+                            </div>
                         </div>
                     </div>
                 </div>
