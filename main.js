@@ -261,6 +261,12 @@ class EventManager {
 		const name = document.getElementById('participantName').value;
 		const email = document.getElementById('participantEmail').value;
 		const studentNumber = parseInt(document.getElementById('studentNumber').value);
+
+		// Ensure a valid numeric student number was provided before validating the email
+		if (isNaN(studentNumber) || studentNumber <= 0) {
+			this.showError('Voer een geldig leerlingnummer in.');
+			return;
+		}
 		const studentProgram = document.getElementById('studentProgram').value;
 
 		// Each select corresponds to a ronde: eventSelect => ronde 1, eventSelect2 => ronde 2, eventSelect3 => ronde 3
@@ -280,7 +286,8 @@ class EventManager {
 
 		// Validate Ter AA email: must be digits (student id) before @ and domain roc-teraa.nl or ter-aa.nl
 		const studentNumberStr = String(studentNumber);
-		const terAaRegex = new RegExp(`^${studentNumberStr}@(roc-)?ter-aa\\.nl$`, 'i');
+		// Accept either 'roc-teraa.nl' or 'ter-aa.nl' (match examples in the UI)
+		const terAaRegex = new RegExp(`^${studentNumberStr}@(roc-teraa|ter-aa)\\.nl$`, 'i');
 		if (!terAaRegex.test(email)) {
 			this.showError('Gebruik je Ter AA e-mailadres: bijvoorbeeld 12345@roc-teraa.nl of 98765@ter-aa.nl. Het gedeelte vóór @ moet je leerlingnummer zijn.');
 			return;

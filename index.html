@@ -123,7 +123,8 @@
                     <div>
                         <label for="participantEmail">Email Adres:</label>
                         <!-- Require address like 12345@roc-teraa.nl or 12345@ter-aa.nl -->
-                            <input type="email" id="participantEmail" required pattern="^[0-9]+@((roc-)?ter-aa)\\.nl$" title="Gebruik je Ter AA e-mailadres: 12345@roc-teraa.nl of 12345@ter-aa.nl">
+                            <!-- Accept either 'roc-teraa.nl' or 'ter-aa.nl' with a numeric local part -->
+                            <input type="email" id="participantEmail" required pattern="^[0-9]+@(?:roc-teraa|ter-aa)\\.nl$" title="Gebruik je Ter AA e-mailadres: 12345@roc-teraa.nl of 12345@ter-aa.nl">
                     </div>
                 </div>
                 <div class="form-row">
