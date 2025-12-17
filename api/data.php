@@ -50,6 +50,14 @@ try {
             password_hash TEXT
         );
     ");
+    // If no admin exists yet, create a default admin (username: admin, password: admin)
+    $stmt = $pdo->query("SELECT COUNT(*) AS cnt FROM admins");
+    $cntRow = $stmt->fetch(PDO::FETCH_ASSOC);
+    if ($cntRow && intval($cntRow['cnt']) === 0) {
+        $defaultHash = password_hash('admin', PASSWORD_DEFAULT);
+        $ins = $pdo->prepare("INSERT INTO admins (username, password_hash) VALUES (:username, :password_hash)");
+        $ins->execute([':username' => 'admin', ':password_hash' => $defaultHash]);
+    }
 } catch (Exception $e) {
     http_response_code(500);
     echo json_encode(['success' => false, 'message' => 'DB init error: ' . $e->getMessage()]);
@@ -107,6 +115,33 @@ if ($method === 'POST') {
     if ($data === null) {
         http_response_code(400);
         echo json_encode(['success' => false, 'message' => 'Invalid JSON']);
+        exit;
+    }
+
+    // Support small actions such as login
+    if (isset($data['action']) && $data['action'] === 'login') {
+        $username = isset($data['username']) ? $data['username'] : '';
+        $password = isset($data['password']) ? $data['password'] : '';
+        if (!$username || !$password) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Missing username or password']);
+            exit;
+        }
+        try {
+            $stmt = $pdo->prepare("SELECT username, password_hash FROM admins WHERE username = :username");
+            $stmt->execute([':username' => $username]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            $found = $row && isset($row['password_hash']) && password_verify($password, $row['password_hash']);
+            if ($found) {
+                echo json_encode(['success' => true, 'username' => $username]);
+            } else {
+                http_response_code(401);
+                echo json_encode(['success' => false, 'message' => 'Invalid credentials']);
+            }
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(['success' => false, 'message' => 'Login error: ' . $e->getMessage()]);
+        }
         exit;
     }
 
