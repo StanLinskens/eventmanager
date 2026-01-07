@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"><title>Teacher Register</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="/eventmanager/style.css">
+  <style>.card{padding:18px;border-radius:12px;max-width:520px;margin:28px}</style>
+</head>
+<body>
+  <div class="card">
+    <h2>Teacher Registration</h2>
+    <form id="reg">
+      <div><input name="username" placeholder="username" class="input" style="width:100%;padding:10px;border-radius:8px;margin-bottom:8px"></div>
+      <div><input type="password" name="password" placeholder="password (min 6)" class="input" style="width:100%;padding:10px;border-radius:8px;margin-bottom:8px"></div>
+      <div><button class="btn" type="submit">Register</button></div>
+    </form>
+    <div id="msg" style="color:#900;margin-top:12px"></div>
+  </div>
+<script>
+document.getElementById('reg').addEventListener('submit', async function(e){
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const body = { username: fd.get('username'), password: fd.get('password'), registration_code: fd.get('code') };
+  try{
+    const res = await fetch('/eventmanager/api/register.php', { method:'POST', body: JSON.stringify(body) });
+    const j = await res.json();
+    if (res.ok && j.ok) { document.getElementById('msg').style.color='#080'; document.getElementById('msg').textContent = 'Registered — you can now log in.'; }
+    else { document.getElementById('msg').textContent = j.error || 'Registration failed'; }
+  }catch(e){ document.getElementById('msg').textContent = 'Network error'; }
+});
+</script>
+</body>
+</html>

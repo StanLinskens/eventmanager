@@ -3,7 +3,9 @@ class EventManager {
 		this.events = [];
 		this.participants = new Map(); // email -> [eventIds] mapping
 		this.eventIdCounter = 1;
+		this.config = {};
 		this.currentUser = null;
+		this.editingEventId = null; // when set, form submit will update existing event
 		// Admin password is now validated against the server-side DB
 		this.apiBase = '/eventmanager/api'; // <-- new: base path to PHP API
 		this.init();
@@ -34,6 +36,17 @@ class EventManager {
 		document.getElementById('clearEvents').addEventListener('click', () => {
 			this.clearAllEvents();
 		});
+
+		// Save global config (admins)
+		const saveGlobalBtn = document.getElementById('saveGlobal');
+		if (saveGlobalBtn) {
+			saveGlobalBtn.addEventListener('click', () => {
+				const val = document.getElementById('globalDate').value;
+				this.config = this.config || {};
+				this.config.date = val || null;
+				this.saveData().then(ok => { if (ok) this.showSuccess('Algemene instellingen opgeslagen.'); });
+			});
+		}
 
 		// Enter key voor admin login
 		document.getElementById('adminPassword').addEventListener('keypress', (e) => {
@@ -89,8 +102,12 @@ class EventManager {
 		document.getElementById('adminPanel').style.display = 'none';
 		document.getElementById('registrationForm').style.display = 'none';
 		document.getElementById('adminLogin').style.display = 'none';
+		const cfgBox = document.getElementById('globalConfigBox');
+		if (cfgBox) cfgBox.style.display = 'none';
 		document.getElementById('adminUsername').value = '';
 		document.getElementById('adminPassword').value = '';
+		const manualLink = document.getElementById('manualLink');
+		if (manualLink) manualLink.style.display = 'none';
 	}
 
 	showInterface() {
@@ -103,9 +120,44 @@ class EventManager {
 		if (this.currentUser.role === 'admin') {
 			document.getElementById('adminPanel').style.display = 'block';
 			document.getElementById('statisticsPanel').style.display = 'block';
+			const manualLink = document.getElementById('manualLink');
+			if (manualLink) manualLink.style.display = 'block';
+
+			// Use the top `globalConfigBox` as the single global setting UI.
+			const cfgBox = document.getElementById('globalConfigBox');
+			if (cfgBox) {
+				cfgBox.style.display = 'block';
+				const inp = document.getElementById('globalDateBox');
+				const saveBtn = document.getElementById('saveGlobalBox');
+				if (inp) {
+					inp.value = this.config.date || '';
+					// only admins can edit; students see the global date read-only
+					inp.disabled = this.currentUser.role !== 'admin';
+				}
+				if (saveBtn) {
+					saveBtn.style.display = this.currentUser.role === 'admin' ? 'inline-block' : 'none';
+					if (this.currentUser.role === 'admin' && !saveBtn._bound) {
+						saveBtn.addEventListener('click', () => {
+							this.config = this.config || {};
+							this.config.date = (document.getElementById('globalDateBox') && document.getElementById('globalDateBox').value) || null;
+							this.saveData().then(ok => { if (ok) this.showSuccess('Algemene instellingen opgeslagen.'); });
+						});
+						saveBtn._bound = true;
+					}
+		// Autofill the event date input with the global date when available
+		const eventDateInput = document.getElementById('eventDate');
+		if (eventDateInput && !eventDateInput.value && this.config && this.config.date) {
+			eventDateInput.value = this.config.date;
+		}
+				}
+			}
 		} else {
 			document.getElementById('registrationForm').style.display = 'block';
 			document.getElementById('statisticsPanel').style.display = 'none';
+			const cfgBoxHide = document.getElementById('globalConfigBox');
+			if (cfgBoxHide) cfgBoxHide.style.display = 'none';
+			const manualLink = document.getElementById('manualLink');
+			if (manualLink) manualLink.style.display = 'none';
 		}
 
 		this.updateDisplay();
@@ -145,7 +197,14 @@ class EventManager {
 					try { ev.participants = JSON.parse(ev.participants); } catch (e) { ev.participants = []; }
 				}
 				ev.participants = (ev.participants || []).map(p => {
-					if (p && p.registeredAt) p.registeredAt = new Date(p.registeredAt);
+					if (p) {
+						if (p.registeredAt) p.registeredAt = new Date(p.registeredAt);
+						// normalize ronde to number when possible
+						if (p.ronde !== undefined && p.ronde !== null) {
+							const rn = parseInt(p.ronde);
+							p.ronde = isNaN(rn) ? p.ronde : rn;
+						}
+					}
 					return p;
 				});
 
@@ -156,6 +215,9 @@ class EventManager {
 			});
 
 			this.eventIdCounter = data.eventIdCounter || (this.events.reduce((m,e)=>Math.max(m,e.id||0),0) + 1) || 1;
+
+			// load global config if present
+			this.config = data.config || {};
 
 			const parts = data.participants || {};
 			const entries = Object.entries(parts).map(([k, v]) => {
@@ -185,6 +247,9 @@ class EventManager {
 				eventIdCounter: this.eventIdCounter
 			};
 
+			// include global config for persistence
+			payload.config = this.config || {};
+
 			const resp = await fetch(`${this.apiBase}/data.php`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -208,8 +273,7 @@ class EventManager {
 		const name = document.getElementById('eventName').value;
 		const description = document.getElementById('eventDescription').value;
 		const workshopLeader = document.getElementById('workshopLeader').value;
-		const startTime = document.getElementById('startTime').value;
-		const endTime = document.getElementById('endTime').value;
+		let eventDate = document.getElementById('eventDate').value; // YYYY-MM-DD
 		const maxParticipants = parseInt(document.getElementById('maxParticipants').value);
 		const location = document.getElementById('location').value;
 		// collect rounds from admin checkboxes and associated time inputs
@@ -226,9 +290,41 @@ class EventManager {
 			return;
 		}
 
-		if (new Date(startTime) >= new Date(endTime)) {
-			this.showError('Eindtijd moet na de starttijd zijn!');
+		// If admin didn't fill event date, fall back to global config date (if set)
+		if (!eventDate && this.config && this.config.date) {
+			eventDate = this.config.date;
+		}
+
+		if (!eventDate) {
+			this.showError('Selecteer een datum voor de workshop.');
 			return;
+		}
+
+		// If we're editing an existing event, update it instead of creating a new one
+		if (this.editingEventId) {
+			const idx = this.events.findIndex(e => e.id === this.editingEventId);
+			if (idx !== -1) {
+				// preserve participants and createdAt
+				const existing = this.events[idx];
+				existing.name = name;
+				existing.description = description;
+				existing.workshopLeader = workshopLeader;
+				existing.date = eventDate;
+				existing.maxParticipants = maxParticipants;
+				existing.location = location;
+				existing.rounds = rounds;
+
+				const ok = await this.saveData();
+				if (!ok) return;
+
+				this.updateDisplay();
+				this.clearForm('eventForm');
+				this.editingEventId = null;
+				this.showSuccess('Event succesvol bijgewerkt!');
+				return;
+			}
+			// if editing id not found, fall through to create new
+			this.editingEventId = null;
 		}
 
 		const event = {
@@ -236,8 +332,7 @@ class EventManager {
 			name,
 			description,
 			workshopLeader,
-			startTime,
-			endTime,
+			date: eventDate,
 			maxParticipants,
 			location,
 			rounds,
@@ -259,12 +354,12 @@ class EventManager {
 
 	async registerParticipant() {
 		const name = document.getElementById('participantName').value;
-		const email = document.getElementById('participantEmail').value;
-		const studentNumber = parseInt(document.getElementById('studentNumber').value);
+        const email = document.getElementById('participantEmail').value.trim().toLowerCase();
+		const studentNumber = document.getElementById('studentnummer').value.trim();
 
-		// Ensure a valid numeric student number was provided before validating the email
-		if (isNaN(studentNumber) || studentNumber <= 0) {
-			this.showError('Voer een geldig leerlingnummer in.');
+		// Ensure a valid numeric student number of 5-6 digits
+		if (!/^[0-9]{5,6}$/.test(studentNumber)) {
+			this.showError('Voer een geldig studentnummer in van 5 of 6 cijfers.');
 			return;
 		}
 		const studentProgram = document.getElementById('studentProgram').value;
@@ -276,23 +371,61 @@ class EventManager {
 			{ id: 'eventSelect3', ronde: 3 }
 		];
 
-		const selectedMap = selectMap.map(s => ({
-			value: document.getElementById(s.id).value,
-			ronde: s.ronde
-		})).filter(s => s.value);
+			const selectedMap = selectMap.map(s => ({
+				value: document.getElementById(s.id).value,
+				ronde: s.ronde
+			})).filter(s => s.value);
 
-		const selectedIds = selectedMap.map(s => parseInt(s.value));
-		const uniqueEventIds = [...new Set(selectedIds)];
+			// Ensure at least one workshop is selected (form `novalidate` disables browser checks)
+			if (selectedMap.length === 0) {
+				this.showError('Selecteer minimaal één workshop (kies een ronde).');
+				return;
+			}
 
-		// Validate Ter AA email: must be digits (student id) before @ and domain roc-teraa.nl or ter-aa.nl
-		const studentNumberStr = String(studentNumber);
-		// Accept either 'roc-teraa.nl' or 'ter-aa.nl' (match examples in the UI)
-		const terAaRegex = new RegExp(`^${studentNumberStr}@(roc-teraa|ter-aa)\\.nl$`, 'i');
-		if (!terAaRegex.test(email)) {
-			this.showError('Gebruik je Ter AA e-mailadres: bijvoorbeeld 12345@roc-teraa.nl of 98765@ter-aa.nl. Het gedeelte vóór @ moet je leerlingnummer zijn.');
-			return;
-		}
+            const selectedIds = selectedMap.map(s => parseInt(s.value));
+            const uniqueEventIds = [...new Set(selectedIds)];
 
+			// Stepwise validation with clear user feedback
+			const allowedDomains = ['roc-teraa.nl', 'ter-aa.nl'];
+			// basic presence of @
+			if (!email || email.indexOf('@') === -1) {
+				this.showError('Ongeldig e-mailadres: ontbreekt het "@" teken?');
+				return;
+			}
+
+			const parts = email.split('@');
+			if (parts.length !== 2) {
+				this.showError('Ongeldig e-mailadres: teveel of te weinig "@" tekens.');
+				return;
+			}
+
+			let [localPart, domainPart] = parts.map(p => p.trim().toLowerCase());
+
+			// local part must start with the numeric student number (allow +tag or .suffix)
+			if (!/^[0-9]{5,6}/.test(localPart)) {
+				this.showError(`Het gedeelte vóór @ moet beginnen met je studentnummer (5-6 cijfers). Gegeven: "${localPart}"`);
+				return;
+			}
+
+			if (!localPart.startsWith(studentNumber)) {
+				this.showError(`Studentnummer komt niet overeen met het e-mailadres. Studentnummer: ${studentNumber}, e-mail lokaal deel: "${localPart}"`);
+				return;
+			}
+
+			// domain: accept exact or subdomain (e.g. mail.roc-teraa.nl)
+			const domainOk = allowedDomains.some(d => domainPart === d || domainPart.endsWith('.' + d));
+			if (!domainOk) {
+				this.showError(`Ongeldig domein: gebruik een Ter AA domein zoals ${allowedDomains.join(' of ')}. Gegeven: "${domainPart}"`);
+				return;
+			}
+
+			// final sanity: validate overall email with a permissive regex
+			// allow local parts with letters/numbers/+-._ and hyphenated domains
+			const permissiveEmailRe = /^[A-Za-z0-9+._%-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
+			if (!permissiveEmailRe.test(email)) {
+				this.showError(`E-mailadres lijkt ongeldig: "${email}"`);
+				return;
+			}
 		if (uniqueEventIds.length !== selectedIds.length) {
 			this.showError('Je hebt hetzelfde event meer dan eens geselecteerd!');
 			return;
@@ -333,13 +466,30 @@ class EventManager {
 				return;
 			}
 
-			const parseDate = (timeStr) => new Date(timeStr);
+			// Build helper to get a Date object for an event's round time
+			const getRoundDateTime = (ev, roundNumber) => {
+				if (!ev || !ev.date || !ev.rounds) return null;
+				const r = ev.rounds.find(x => parseInt(x.round) === parseInt(roundNumber));
+				if (!r || !r.time) return null;
+				const iso = `${ev.date}T${r.time}`;
+				const d = new Date(iso);
+				if (isNaN(d.getTime())) return null;
+				return d;
+			};
 
-			// Compare start times to detect scheduling conflicts (minimal check). Events store startTime/endTime.
+			// Compare chosen ronde datetime against existing registrations (coarse check: any ronde time match)
+			const newEventTime = getRoundDateTime(event, requestedRonde);
 			const hasTimeConflict = currentEvents.some(id => {
 				const e = this.events.find(ev => ev.id === id);
-				return e && parseDate(e.startTime).getTime() === parseDate(event.startTime).getTime();
-			}) || newEvents.some(e => parseDate(e.event.startTime).getTime() === parseDate(event.startTime).getTime());
+				if (!e) return false;
+				return e.rounds && e.rounds.some(rr => {
+					const existingDT = getRoundDateTime(e, rr.round);
+					return existingDT && newEventTime && existingDT.getTime() === newEventTime.getTime();
+				});
+			}) || newEvents.some(en => {
+				const existingDT = getRoundDateTime(en.event, en.ronde);
+				return existingDT && newEventTime && existingDT.getTime() === newEventTime.getTime();
+			});
 
 			if (hasTimeConflict) {
 				this.showError(`Tijdconflict gevonden voor "${event.name}"!`);
@@ -358,7 +508,9 @@ class EventManager {
 		};
 
 		for (const entry of newEvents) {
-			entry.event.participants.push(participant);
+			// create a per-event participant record that includes the chosen ronde
+			const perEventParticipant = Object.assign({}, participant, { ronde: entry.ronde });
+			entry.event.participants.push(perEventParticipant);
 			currentEvents.push(entry.event.id);
 		}
 
@@ -441,57 +593,62 @@ class EventManager {
 	}
 
 	exportToCSV() {
-		let csv = 'Event Naam,Beschrijving,Workshop Leider,Datum,Tijd,Locatie,Rondes (met tijden),Maximum Deelnemers,Aantal Aanmeldingen,Deelnemer Naam,Email,Leerlingnummer,Opleiding,Aanmelddatum\n';
+// helper to escape CSV fields
+const esc = (val) => {
+if (val === null || val === undefined) return '';
+const s = String(val);
+return '"' + s.replace(/"/g, '""') + '"';
+};
 
-		this.events.forEach(event => {
-			const startDate = new Date(event.startTime);
-			const endDate = new Date(event.endTime);
-			const dateStr = startDate.toLocaleDateString('nl-NL', { day: '2-digit', month: 'short' });
-			const timeStr = `${startDate.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })} - ${endDate.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })}`;
-			
-			const roundsStr = event.rounds && event.rounds.length ? event.rounds.map(r => `Ronde ${r.round} (${r.time || 'geen tijd'})`).join(' | ') : '';
-			const baseInfo = `"${event.name}","${event.description}","${event.workshopLeader}","${dateStr}","${timeStr}","${event.location}","${roundsStr}",${event.maxParticipants},${event.participants.length}`;
+let csv = 'Event ID,Event Naam,Beschrijving,Workshop Leider,Datum,Tijd,Locatie,Rondes,Max Deelnemers,Aantal Aanmeldingen,Created At,Deelnemer Naam,Email,Leerlingnummer,Opleiding,Ronde,Aanmelddatum\n';
 
-			if (event.participants.length === 0) {
-				csv += baseInfo + ',,,,,\n';
-			} else {
-				event.participants.forEach(participant => {
-					csv += baseInfo + `,"${participant.name}","${participant.email}",${participant.studentNumber},"${participant.studentProgram}","${participant.registeredAt.toLocaleString('nl-NL')}"\n`;
-				});
-			}
-		});
+this.events.forEach(event => {
+const dateStr = event.date || '';
+const roundsNumbers = event.rounds && event.rounds.length ? event.rounds.map(r => `Ronde ${r.round}`).join(', ') : '';
+const timeStr = event.rounds && event.rounds.length ? event.rounds.map(r => r.time || '').filter(t => t).join(' | ') : '';
+const createdAtStr = event.createdAt && event.createdAt.toISOString ? event.createdAt.toISOString() : (event.createdAt || '');
+const baseArr = [event.id || '', event.name || '', event.description || '', event.workshopLeader || '', dateStr, timeStr, event.location || '', roundsNumbers, event.maxParticipants || 0, event.participants.length || 0, createdAtStr];
 
-		this.downloadFile(csv, 'events-export.csv', 'text/csv');
-	}
+if (!event.participants || event.participants.length === 0) {
+csv += baseArr.map(esc).join(',') + ',,,,,,\n';
+} else {
+event.participants.forEach(participant => {
+const regAt = participant.registeredAt && participant.registeredAt.toISOString ? participant.registeredAt.toISOString() : (participant.registeredAt || '');
+const row = baseArr.concat([participant.name || '', participant.email || '', participant.studentNumber || '', participant.studentProgram || '', participant.ronde || '', regAt]);
+csv += row.map(esc).join(',') + '\n';
+});
+}
+});
 
-	exportToExcel() {
-		// Simple HTML table format that Excel can open
-		let html = '<table border="1">';
-		html += '<tr><th>Event Naam</th><th>Beschrijving</th><th>Workshop Leider</th><th>Datum</th><th>Tijd</th><th>Locatie</th><th>Rondes (met tijden)</th><th>Max Deelnemers</th><th>Aantal Aanmeldingen</th><th>Deelnemer Naam</th><th>Email</th><th>Leerlingnummer</th><th>Opleiding</th><th>Aanmelddatum</th></tr>';
+this.downloadFile(csv, 'events-export.csv', 'text/csv');
+}exportToExcel() {
+// Simple HTML table format that Excel can open
+let html = '<table border="1">';
+html += '<tr><th>Event ID</th><th>Event Naam</th><th>Beschrijving</th><th>Workshop Leider</th><th>Datum</th><th>Tijd</th><th>Rondes</th><th>Locatie</th><th>Max Deelnemers</th><th>Aantal Aanmeldingen</th><th>Created At</th><th>Deelnemer Naam</th><th>Email</th><th>Leerlingnummer</th><th>Opleiding</th><th>Ronde</th><th>Aanmelddatum</th></tr>';
 
-		this.events.forEach(event => {
-			const startDate = new Date(event.startTime);
-			const endDate = new Date(event.endTime);
-			const dateStr = startDate.toLocaleDateString('nl-NL', { day: '2-digit', month: 'short' });
-			const timeStr = `${startDate.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })} - ${endDate.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })}`;
-			
-			const roundsStr = event.rounds && event.rounds.length ? event.rounds.map(r => `Ronde ${r.round} (${r.time || 'geen tijd'})`).join(' | ') : '';
-			const baseInfo = `<td>${event.name}</td><td>${event.description}</td><td>${event.workshopLeader}</td><td>${dateStr}</td><td>${timeStr}</td><td>${event.location}</td><td>${roundsStr}</td><td>${event.maxParticipants}</td><td>${event.participants.length}</td>`;
+const escapeHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-			if (event.participants.length === 0) {
-				html += '<tr>' + baseInfo + '<td></td><td></td><td></td><td></td><td></td></tr>';
-			} else {
-				event.participants.forEach(participant => {
-					html += '<tr>' + baseInfo + `<td>${participant.name}</td><td>${participant.email}</td><td>${participant.studentNumber}</td><td>${participant.studentProgram}</td><td>${participant.registeredAt.toLocaleString('nl-NL')}</td></tr>`;
-				});
-			}
-		});
+this.events.forEach(event => {
+const dateStr = event.date || '';
+const roundsNumbers = event.rounds && event.rounds.length ? event.rounds.map(r => `Ronde ${r.round}`).join(', ') : '';
+const timeStr = event.rounds && event.rounds.length ? event.rounds.map(r => r.time || '').filter(t => t).join(' | ') : '';
+const createdAtStr = event.createdAt && event.createdAt.toISOString ? event.createdAt.toISOString() : (event.createdAt || '');
+const baseInfo = `<td>${event.id || ''}</td><td>${escapeHtml(event.name || '')}</td><td>${escapeHtml(event.description || '')}</td><td>${escapeHtml(event.workshopLeader || '')}</td><td>${escapeHtml(dateStr)}</td><td>${escapeHtml(timeStr)}</td><td>${escapeHtml(roundsNumbers)}</td><td>${escapeHtml(event.location || '')}</td><td>${event.maxParticipants || 0}</td><td>${event.participants.length || 0}</td><td>${escapeHtml(createdAtStr)}</td>`;
 
-		html += '</table>';
-		this.downloadFile(html, 'events-export.xls', 'application/vnd.ms-excel');
-	}
+if (!event.participants || event.participants.length === 0) {
+html += '<tr>' + baseInfo + '<td></td><td></td><td></td><td></td><td></td></tr>';
+} else {
+event.participants.forEach(participant => {
+const regAt = participant.registeredAt && participant.registeredAt.toISOString ? participant.registeredAt.toISOString() : (participant.registeredAt || '');
+html += '<tr>' + baseInfo + `<td>${escapeHtml(participant.name || '')}</td><td>${escapeHtml(participant.email || '')}</td><td>${escapeHtml(participant.studentNumber || '')}</td><td>${escapeHtml(participant.studentProgram || '')}</td><td>${escapeHtml(participant.ronde || '')}</td><td>${escapeHtml(regAt)}</td></tr>`;
+});
+}
+});
 
-	downloadFile(content, filename, contentType) {
+html += '</table>';
+const fileDate = (this.config && this.config.date) ? this.config.date : (new Date().toISOString().slice(0,10));
+this.downloadFile(html, 'workshops-' + fileDate + '.xls', 'application/vnd.ms-excel');
+}downloadFile(content, filename, contentType) {
 		const blob = new Blob([content], { type: contentType });
 		const url = window.URL.createObjectURL(blob);
 		const a = document.createElement('a');
@@ -537,11 +694,11 @@ class EventManager {
 				}
 			});
 
-			// Reset dates so the admin *must* pick new ones
-			document.getElementById('startTime').value = '';
-			document.getElementById('endTime').value = '';
+			// Put the form into edit mode for this existing event
+			document.getElementById('eventDate').value = eventToCopy.date || '';
+			this.editingEventId = eventToCopy.id;
 
-			this.showSuccess('Workshop gegevens gekopieerd naar het formulier. Pas de datum/tijd aan en klik op toevoegen!');
+			this.showSuccess('Workshop gegevens geladen in bewerk-modus. Klik op toevoegen om wijzigingen op te slaan.');
 		}
 	}
 
@@ -564,14 +721,14 @@ class EventManager {
 		// Always render events for all users. Admin-only controls are inserted conditionally.
 		grid.innerHTML = this.events.map(event => {
 			const isFull = event.participants.length >= event.maxParticipants;
-			const startDate = new Date(event.startTime);
-			const endDate = new Date(event.endTime);
-			const roundsLabel = event.rounds && event.rounds.length ? event.rounds.map(r => `${r.round}${r.time ? ' (' + r.time + ')' : ''}`).join(', ') : '-';
+			const dateObj = event.date ? new Date(event.date) : null;
+			const dateLabel = dateObj ? dateObj.toLocaleDateString('nl-NL', { day: '2-digit', month: 'short' }) : '-';
+			const roundsHtml = event.rounds && event.rounds.length ? event.rounds.map(r => `${r.time ? `<div><strong>Ronde ${r.round}:</strong> ${r.time}</div>` : `<div><strong>Ronde ${r.round}:</strong> geen tijd</div>`}`).join('') : '<div>Geen rondes</div>';
 
 			return `
 				<div class="event-card ${isFull ? 'full' : ''}">
 					<div class="event-header">
-						<div class="event-title">${event.name} (Rondes ${roundsLabel})</div>
+						<div class="event-title">${event.name}</div>
 						<div class="event-status ${isFull ? 'status-full' : 'status-available'}">
 							${isFull ? 'VOL' : 'BESCHIKBAAR'}
 						</div>
@@ -579,18 +736,18 @@ class EventManager {
 
 					<div class="event-details">
 						${event.description ? `<p style="margin-bottom: 15px; color: #7f8c8d;">${event.description}</p>` : ''}
-						
+
 						<div class="event-detail">
 							<span><strong>👨‍🏫 Workshop Leider:</strong></span>
 							<span>${event.workshopLeader}</span>
 						</div>
 						<div class="event-detail">
 							<span><strong>📅 Datum:</strong></span>
-							<span>${startDate.toLocaleDateString('nl-NL', { day: '2-digit', month: 'short' })}</span>
+							<span>${dateLabel}</span>
 						</div>
 						<div class="event-detail">
-							<span><strong>⏰ Tijd:</strong></span>
-							<span>${startDate.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })} - ${endDate.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })}</span>
+							<span><strong>⏱️ Rondes:</strong></span>
+							<span>${roundsHtml}</span>
 						</div>
 						${event.location ? `
 						<div class="event-detail">
@@ -612,7 +769,7 @@ class EventManager {
 							<div>
 								<div><strong>${p.name}</strong> (${p.email})</div>
 								<div class="participant-details">
-									Leerlingnummer: ${p.studentNumber} | Opleiding: ${p.studentProgram}
+									Studentnummer: ${p.studentNumber} | Opleiding: ${p.studentProgram}
 								</div>
 							</div>
 							${this.currentUser && this.currentUser.role === 'admin' ? `
@@ -626,7 +783,7 @@ class EventManager {
 					<!-- Admin actions -->
 					${this.currentUser && this.currentUser.role === 'admin' ? `
 					<div class="event-actions">
-						<button onclick="eventManager.copyEvent(${event.id})">📋 Kopiëren</button>
+						<button title="Bewerk workshop" onclick="eventManager.copyEvent(${event.id})">✏️ Bewerken</button>
 						<button onclick="eventManager.deleteEvent(${event.id})">🗑️ Verwijderen</button>
 					</div>
 					` : ''}
@@ -731,3 +888,19 @@ class EventManager {
 
 // Initialize the EventManager
 const eventManager = new EventManager();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

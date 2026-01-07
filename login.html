@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Event Manager Login</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="/eventmanager/style.css">
+  <style>body{font-family:Inter,Arial;margin:28px} .card{padding:18px;border-radius:12px;max-width:520px}</style>
+</head>
+<body>
+  <div class="card">
+    <h2>Login (teachers or students)</h2>
+    <div style="margin-bottom:12px;"><label><input type="radio" name="role" value="teacher" checked> Teacher</label> <label style="margin-left:12px;"><input type="radio" name="role" value="student"> Student</label></div>
+
+    <form id="loginForm">
+      <div id="teacherFields">
+        <div><input name="username" placeholder="Username" class="input" style="width:100%;padding:10px;border-radius:8px;margin-bottom:8px"></div>
+        <div><input name="password" type="password" placeholder="Password" class="input" style="width:100%;padding:10px;border-radius:8px"></div>
+      </div>
+      <div id="studentFields" style="display:none">
+        <div><input name="code" placeholder="Student code" class="input" style="width:100%;padding:10px;border-radius:8px"></div>
+      </div>
+
+      <div style="margin-top:12px;"><button class="btn" type="submit">Login</button></div>
+    </form>
+    <div id="msg" style="margin-top:12px;color:#900"></div>
+  </div>
+
+<script>
+  const roleRadios = Array.from(document.querySelectorAll('input[name=role]'));
+  const teacherFields = document.getElementById('teacherFields');
+  const studentFields = document.getElementById('studentFields');
+  roleRadios.forEach(r => r.addEventListener('change', ()=>{
+    if (document.querySelector('input[name=role]:checked').value === 'student') { teacherFields.style.display='none'; studentFields.style.display='block'; }
+    else { teacherFields.style.display='block'; studentFields.style.display='none'; }
+  }));
+
+  document.getElementById('loginForm').addEventListener('submit', async function(e){
+    e.preventDefault();
+    const role = document.querySelector('input[name=role]:checked').value;
+    let body = { role };
+    if (role === 'teacher') { body.username = this.username.value; body.password = this.password.value; }
+    else { body.code = this.code.value; }
+    try {
+      const res = await fetch('/eventmanager/api/login.php', { method: 'POST', body: JSON.stringify(body) });
+      const j = await res.json();
+      if (res.ok && j.ok) { window.location.href = '/eventmanager/index.html'; }
+      else { document.getElementById('msg').textContent = j.error || 'Login failed'; }
+    } catch (e) { document.getElementById('msg').textContent = 'Network error'; }
+  });
+</script>
+</body>
+</html>

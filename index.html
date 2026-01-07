@@ -14,6 +14,10 @@
             <h1>Workshops manager</h1>
         </div>
 
+        <div id="manualLink" class="manual-link" style="margin-bottom:12px;display:none;">
+            <a href="user_manual.html">Gebruikershandleiding — Hoe de site te gebruiken</a>
+        </div>
+
         <!-- Authentication Panel -->
         <div class="auth-panel" id="authPanel">
             <h2>Welkom bij WorkshopManager</h2>
@@ -45,6 +49,16 @@
             <button class="logout-btn" onclick="eventManager.logout()">Uitloggen</button>
         </div>
 
+        <!-- Global Admin Config (visible to admins) -->
+        <div class="global-config" id="globalConfigBox" style="background:#fff;border:1px solid #e6e6e6;padding:12px;border-radius:8px;margin:12px 0;display:none;max-width:720px;">
+            <h3 style="margin:0 0 8px 0;">Algemene Instellingen</h3>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <label for="globalDate" style="margin:0;">Datum (globaal):</label>
+                <input type="date" id="globalDateBox">
+                <button type="button" id="saveGlobalBox">Opslaan</button>
+            </div>
+        </div>
+
         <!-- Admin Panel -->
         <div class="admin-panel" id="adminPanel">
             <h2>🎯 Workshop Beheer</h2>
@@ -71,12 +85,8 @@
                 </div>
                 <div class="form-row">
                     <div>
-                        <label for="startTime">Starttijd:</label>
-                        <input type="datetime-local" id="startTime" required>
-                    </div>
-                    <div>
-                        <label for="endTime">Eindtijd:</label>
-                        <input type="datetime-local" id="endTime" required>
+                        <label for="eventDate">Datum:</label>
+                        <input type="date" id="eventDate" required>
                     </div>
                 </div>
                 <div class="form-row">
@@ -114,7 +124,7 @@
         <!-- Registration Form -->
         <div class="registration-form" id="registrationForm">
             <h2>📋 Aanmelden voor Workshop</h2>
-            <form id="studentRegistrationForm">
+            <form id="studentRegistrationForm" novalidate>
                 <div class="form-row">
                     <div>
                         <label for="participantName">Volledige Naam:</label>
@@ -122,15 +132,14 @@
                     </div>
                     <div>
                         <label for="participantEmail">Email Adres:</label>
-                        <!-- Require address like 12345@roc-teraa.nl or 12345@ter-aa.nl -->
-                            <!-- Accept either 'roc-teraa.nl' or 'ter-aa.nl' with a numeric local part -->
-                            <input type="email" id="participantEmail" required pattern="^[0-9]+@(?:roc-teraa|ter-aa)\\.nl$" title="Gebruik je Ter AA e-mailadres: 12345@roc-teraa.nl of 12345@ter-aa.nl">
+                        <!-- Email will be validated by JS to allow Ter AA formats -->
+                            <input type="email" id="participantEmail" required>
                     </div>
                 </div>
                 <div class="form-row">
                     <div>
-                        <label for="studentNumber">Leerlingnummer:</label>
-                        <input type="number" id="studentNumber" min="1" required>
+                        <label for="studentnummer">Studentnummer:</label>
+                        <input type="text" id="studentnummer" required pattern="^[0-9]{5,6}$" title="Vul een leerlingnummer in van 5 of 6 cijfers">
                     </div>
                     <div>
                         <label for="studentProgram">Opleiding:</label>
@@ -178,4 +187,163 @@
     </div>
 </body>
 </html>
-<script src="main.js"></script>
+<script src="main.js"></script><script>
+// Load global date from API JSON and autofill both inputs; save updates config via API
+(function(){
+  async function loadGlobal() {
+    try {
+      const resp = await fetch('api/data.php');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const cfg = data.config || {};
+      const dateVal = (cfg.date) ? cfg.date : (cfg['date'] || '');
+      const globalInp = document.getElementById('globalDateBox');
+      if (globalInp) globalInp.value = dateVal || '';
+      const eventDateInput = document.getElementById('eventDate');
+      if (eventDateInput && (!eventDateInput.value || eventDateInput.value === '')) eventDateInput.value = dateVal || '';
+    } catch (e) {
+      console.warn('Could not load global date', e);
+    }
+  }
+
+  async function saveGlobal() {
+    const val = (document.getElementById('globalDateBox') || {value: ''}).value || null;
+    try {
+      // fetch current full data, attach new config and POST back
+      const r = await fetch('api/data.php');
+      if (!r.ok) throw new Error('Could not fetch current data');
+      const current = await r.json();
+      const payload = {
+        events: current.events || [],
+        participants: current.participants || {},
+        eventIdCounter: current.eventIdCounter || 1,
+        config: Object.assign({}, current.config || {}, { date: val })
+      };
+      const resp = await fetch('api/data.php', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+      });
+      if (!resp.ok) throw new Error('Save failed');
+      // apply to inputs
+      const eventDateInput = document.getElementById('eventDate');
+      if (eventDateInput) eventDateInput.value = val || '';
+      const globalInp = document.getElementById('globalDateBox');
+      if (globalInp) globalInp.value = val || '';
+      alert('Algemene instellingen opgeslagen.');
+    } catch (e) {
+      console.error('Save error', e);
+      alert('Kon globale datum niet opslaan.');
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', function(){
+    loadGlobal();
+    const saveBtn = document.getElementById('saveGlobalBox');
+    if (saveBtn) saveBtn.addEventListener('click', saveGlobal);
+  });
+})();
+</script>
+<script>
+// Runtime patch: make the existing "Kopiëren" button perform a full edit (no duplicate)
+// Wait until the global `eventManager` is available
+(function(){
+  function whenReady(fn){
+    if (window.eventManager) return fn();
+    const t = setInterval(() => { if (window.eventManager) { clearInterval(t); fn(); } }, 50);
+  }
+
+  whenReady(() => {
+    const mgr = window.eventManager;
+    // keep original addEvent to call for new creations
+    mgr._originalAddEvent = mgr.addEvent.bind(mgr);
+
+    // editing id marker
+    mgr.editingEventId = null;
+
+    // override addEvent: if editingEventId is set, update existing event instead of creating
+    mgr.addEvent = async function(){
+      if (!this.editingEventId) {
+        return this._originalAddEvent();
+      }
+
+      // gather form values
+      const name = document.getElementById('eventName').value;
+      const description = document.getElementById('eventDescription').value;
+      const workshopLeader = document.getElementById('workshopLeader').value;
+      const eventDate = document.getElementById('eventDate').value;
+      const maxParticipants = parseInt(document.getElementById('maxParticipants').value) || 0;
+      const location = document.getElementById('location').value;
+      const roundCheckboxes = Array.from(document.querySelectorAll('.roundCheckbox'));
+      const rounds = roundCheckboxes.filter(cb => cb.checked).map(cb => {
+        const num = parseInt(cb.value);
+        const timeInput = document.querySelector(`.roundTime[data-round="${num}"]`);
+        const time = timeInput ? timeInput.value : '';
+        return { round: num, time };
+      });
+
+      const existing = this.events.find(e => e.id === this.editingEventId);
+      if (!existing) { this.showError('Event niet gevonden voor bewerking.'); return; }
+
+      existing.name = name;
+      existing.description = description;
+      existing.workshopLeader = workshopLeader;
+      existing.date = eventDate;
+      existing.maxParticipants = maxParticipants;
+      existing.location = location;
+      existing.rounds = rounds;
+
+      // persist and refresh
+      const ok = await this.saveData();
+      if (!ok) return;
+      this.updateDisplay();
+      this.clearForm('eventForm');
+      this.editingEventId = null;
+      const submitBtn = document.querySelector('#eventForm button[type="submit"]');
+      if (submitBtn) submitBtn.textContent = '📅 Workshop Toevoegen';
+      this.showSuccess('Workshop succesvol bijgewerkt!');
+    };
+
+    // repurpose copyEvent to start editing instead of copying
+    mgr.copyEvent = function(id){
+      const ev = this.events.find(e => e.id === id);
+      if (!ev) { this.showError('Event niet gevonden'); return; }
+
+      // fill form fields
+      document.getElementById('eventName').value = ev.name || '';
+      document.getElementById('eventDescription').value = ev.description || '';
+      document.getElementById('workshopLeader').value = ev.workshopLeader || '';
+      document.getElementById('location').value = ev.location || '';
+      document.getElementById('maxParticipants').value = ev.maxParticipants || 1;
+      document.getElementById('eventDate').value = ev.date || '';
+
+      // set checkboxes and times
+      const checkboxes = Array.from(document.querySelectorAll('.roundCheckbox'));
+      checkboxes.forEach(cb => {
+        const val = parseInt(cb.value);
+        cb.checked = ev.rounds ? ev.rounds.some(r => parseInt(r.round) === val) : false;
+        const timeInput = document.querySelector(`.roundTime[data-round="${val}"]`);
+        if (timeInput) {
+          const found = ev.rounds ? ev.rounds.find(r => parseInt(r.round) === val) : null;
+          timeInput.value = found ? (found.time || '') : '';
+        }
+      });
+
+      this.editingEventId = id;
+      const submitBtn = document.querySelector('#eventForm button[type="submit"]');
+      if (submitBtn) submitBtn.textContent = '💾 Opslaan';
+      this.showSuccess('Bewerk de velden en klik op Opslaan om wijzigingen op te slaan.');
+    };
+
+    // Optional: change visible button label text from Kopiëren to Bewerken after each render
+    const observer = new MutationObserver(() => {
+      document.querySelectorAll('.event-actions button').forEach(btn => {
+        if (btn.textContent && btn.textContent.indexOf('Kopiëren') !== -1) {
+          btn.textContent = btn.textContent.replace('Kopiëren', 'Bewerken');
+        }
+      });
+    });
+    observer.observe(document.getElementById('eventsGrid') || document.body, { childList: true, subtree: true });
+  });
+})();
+</script>
