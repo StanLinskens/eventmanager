@@ -766,7 +766,7 @@ this.downloadFile(html, 'workshops-' + fileDate + '.xls', 'application/vnd.ms-ex
 						</div>
 					</div>
 
-					${event.participants.length > 0 ? `
+					${event.participants.length > 0 && this.currentUser && this.currentUser.role === 'admin' ? `
 					<div class="participants-list">
 						<strong>Aangemelde deelnemers:</strong>
 						${event.participants.map(p => `
